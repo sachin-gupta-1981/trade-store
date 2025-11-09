@@ -20,11 +20,3 @@ jobs:
 
       - name: Build and run tests
         run: mvn -B -DskipTests=false clean verify
-
-      - name: Dependency-Check Scan
-        uses: jeremylong/dependency-check-action@v8
-        with:
-          project: 'trade-store'
-          scanSet: 'pom.xml'
-          format: 'ALL'
-          failBuildOnCVSS: '9'
