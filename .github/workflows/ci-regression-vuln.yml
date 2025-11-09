@@ -1,19 +1,23 @@
-name: CI - Build / Unit / Regression / Vulnerability Scan / Diagram
+name: CI - Build / Unit / Regression / Vulnerability Scan / Diagram / CD
 
 on:
   push:
     branches: [ main, master ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
   packages: write
-  actions: write
+  id-token: write
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/trade-store
 
 jobs:
   build-and-tests:
+    name: Build & Unit tests
     runs-on: ubuntu-latest
     env:
       MAVEN_OPTS: -Xmx2g
@@ -37,19 +41,18 @@ jobs:
 
       - name: Build (compile + unit tests)
         run: mvn -B -DskipTests=false -DskipITs=true clean verify
-        continue-on-error: false
 
-      - name: Upload test results (unit tests)
+      - name: Upload unit test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-unit-results
-          path: target/surefire-reports || target/*.xml
+          path: target/surefire-reports
 
   regression-tests:
+    name: Regression / Integration tests
     runs-on: ubuntu-latest
     needs: build-and-tests
-    if: ${{ always() }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,21 +64,20 @@ jobs:
           java-version: 17
 
       - name: Run regression tests (maven profile 'regression')
-        # Ensure you have a maven profile named 'regression' configured to run integration/regression tests
         run: mvn -B -Pregression -DskipTests=false -DskipITs=false verify
-        continue-on-error: false
 
-      - name: Upload regression test results
+      - name: Upload regression test reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: junit-regression-results
-          path: target/failsafe-reports || target/*.xml
-  
+          path: target/failsafe-reports
+
   dependency-scan:
+    name: OWASP Dependency-Check (conditional)
     runs-on: ubuntu-latest
     needs: [build-and-tests, regression-tests]
-    # Only run this job when NVD_API_KEY secret is set to a non-empty value.
+    # Only execute when an NVD API key has been configured in repo secrets.
     if: ${{ secrets.NVD_API_KEY != '' }}
     timeout-minutes: 30
     steps:
@@ -96,14 +98,16 @@ jobs:
           else
             echo "NVD_API_KEY present - proceeding"
           fi
+        shell: bash
 
       - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key (with retries)
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        shell: bash
         run: |
-          set -euo pipefail
+          set -e -o pipefail
           export NVD_API_KEY="${NVD_API_KEY}"
-          # run with a simple retry loop to handle transient NVD download issues
+
           MAX_RETRIES=3
           COUNT=0
           until [ "$COUNT" -ge "$MAX_RETRIES" ]
@@ -117,6 +121,7 @@ jobs:
             echo "dependency-check attempt $COUNT failed, retrying in 15s..."
             sleep 15
           done
+
           if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
             echo "dependency-check failed after ${MAX_RETRIES} attempts"
             exit 1
@@ -129,26 +134,122 @@ jobs:
           name: dependency-check-report
           path: dependency-check-report
 
-
   plantuml-render:
+    name: Render PlantUML diagrams
     runs-on: ubuntu-latest
     needs: [build-and-tests]
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Ensure output dir exists
+        run: mkdir -p generated-diagrams
+        shell: bash
+
       - name: Render PlantUML diagrams with Docker image
+        shell: bash
         run: |
-          mkdir -p generated-diagrams
-          # render all .puml files under plantuml/ to PNG into generated-diagrams/
-          docker run --rm \
-            -v "${{ github.workspace }}/plantuml":/workspace \
-            -v "${{ github.workspace }}/generated-diagrams":/output \
-            plantuml/plantuml:latest \
-            -tpng /workspace/*.puml -o /output
+          set -e -o pipefail
+          echo "Rendering plantuml/*.puml -> generated-diagrams/"
+          # use nullglob safety for bash
+          shopt -s nullglob || true
+          files=(plantuml/*.puml)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No .puml files found under plantuml/ - skipping render"
+          else
+            docker run --rm \
+              -v "${{ github.workspace }}/plantuml":/workspace \
+              -v "${{ github.workspace }}/generated-diagrams":/output \
+              plantuml/plantuml:latest \
+              -tpng /workspace/*.puml -o /output
+          fi
 
       - name: Upload rendered diagrams
         uses: actions/upload-artifact@v4
         with:
           name: plantuml-diagrams
           path: generated-diagrams
+
+  build-and-push-image:
+    name: Build & Push Docker image
+    runs-on: ubuntu-latest
+    needs: [dependency-scan, regression-tests]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:latest
+          platforms: linux/amd64
+
+      - name: Upload image metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-metadata
+          path: |
+            image-metadata.txt
+        continue-on-error: true
+        # Note: you can create image-metadata.txt in previous step if you want to persist info
+
+  deploy-to-k8s:
+    name: Deploy to Kubernetes (conditional)
+    runs-on: ubuntu-latest
+    needs: build-and-push-image
+    if: ${{ secrets.KUBECONFIG_DATA != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure Kubeconfig from secret
+        shell: bash
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
+        run: |
+          set -e -o pipefail
+          echo "Writing kubeconfig to file"
+          echo "${KUBECONFIG_DATA}" | base64 --decode > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+          kubectl config view
+
+      - name: Update deployment image and rollout
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -e -o pipefail
+          echo "Setting deployment image to $IMAGE_NAME:$IMAGE_TAG"
+          kubectl set image deployment/trade-store trade-store=${{ env.IMAGE_NAME }}:${IMAGE_TAG} --record || true
+          kubectl rollout status deployment/trade-store --timeout=120s || true
+
+      - name: Post-deploy notes
+        shell: bash
+        run: |
+          echo "Deployment attempted. If you need to check services, run:"
+          echo "kubectl get pods -l app=trade-store -o wide"
+
