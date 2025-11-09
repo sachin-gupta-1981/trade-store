@@ -71,10 +71,13 @@ jobs:
         with:
           name: junit-regression-results
           path: target/failsafe-reports || target/*.xml
-
+  
   dependency-scan:
     runs-on: ubuntu-latest
     needs: [build-and-tests, regression-tests]
+    # Only run this job when NVD_API_KEY secret is set to a non-empty value.
+    if: ${{ secrets.NVD_API_KEY != '' }}
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -85,17 +88,40 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key
-        env:
-            NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+      - name: Show NVD key present
         run: |
-          # export for plugin, and pass as maven property as extra safety
+          if [ -z "${{ secrets.NVD_API_KEY }}" ]; then
+            echo "NVD_API_KEY not provided - skipping dependency-check"
+            exit 1
+          else
+            echo "NVD_API_KEY present - proceeding"
+          fi
+
+      - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key (with retries)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          set -euo pipefail
           export NVD_API_KEY="${NVD_API_KEY}"
-          mvn -B org.owasp:dependency-check-maven:8.3.0:check \
-            -Dformat=ALL \
-            -DoutputDirectory=dependency-check-report \
-            -Dnvd.apiKey="${NVD_API_KEY}" \
-            -Dproperties.failBuildOnCVSS=9
+          # run with a simple retry loop to handle transient NVD download issues
+          MAX_RETRIES=3
+          COUNT=0
+          until [ "$COUNT" -ge "$MAX_RETRIES" ]
+          do
+            mvn -B org.owasp:dependency-check-maven:8.3.0:check \
+              -Dformat=ALL \
+              -DoutputDirectory=dependency-check-report \
+              -Dnvd.apiKey="${NVD_API_KEY}" \
+              -Dproperties.failBuildOnCVSS=9 && break
+            COUNT=$((COUNT+1))
+            echo "dependency-check attempt $COUNT failed, retrying in 15s..."
+            sleep 15
+          done
+          if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
+            echo "dependency-check failed after ${MAX_RETRIES} attempts"
+            exit 1
+          fi
+
       - name: Upload dependency check reports
         if: always()
         uses: actions/upload-artifact@v4
