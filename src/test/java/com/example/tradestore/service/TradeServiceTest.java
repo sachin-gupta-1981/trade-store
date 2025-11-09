@@ -1,7 +1,7 @@
 package com.example.tradestore.service;
 
 import com.example.tradestore.entity.Trade;
-import com.example.tradestore.repository.TradeRepository;
+import com.example.tradestore.repository.jpa.TradeRepository;
 import com.example.tradestore.repository.DualTradeRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
