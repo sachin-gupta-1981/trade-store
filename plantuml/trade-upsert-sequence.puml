@@ -1,0 +1,24 @@
+@startuml
+title Trade Upsert Sequence
+
+actor Producer
+participant "Kafka Topic: trades" as Kafka
+participant "TradeKafkaListener" as Listener
+participant "TradeService" as Service
+participant "DualTradeRepository" as DualRepo
+participant "TradeRepository (SQL)" as SQL
+participant "TradeMongoRepository (Mongo)" as Mongo
+
+Producer -> Kafka : send(trade-json)
+Kafka -> Listener : deliver(message)
+Listener -> Service : upsertFromDto(dto)
+Service -> SQL : findTopByTradeIdOrderByVersionDesc(tradeId)
+SQL --> Service : existingVersion
+alt incoming.version < existing
+  Service -> Listener : throw TradeValidationException
+else
+  Service -> DualRepo : save(trade)
+  DualRepo -> SQL : save(trade)
+  DualRepo -> Mongo : save(copy)
+end
+@enduml

@@ -1,0 +1,23 @@
+@startuml
+title Trade Domain Class
+
+class Trade {
+  +Long sqlId
+  +String mongoId
+  +String tradeId
+  +int version
+  +String counterPartyId
+  +String bookId
+  +LocalDate maturityDate
+  +LocalDate createdDate
+  +boolean expired
+}
+
+class TradeDto {
+  +String tradeId
+  +int version
+  +String counterPartyId
+  +String bookId
+  +LocalDate maturityDate
+}
+@enduml
