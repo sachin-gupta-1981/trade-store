@@ -74,40 +74,43 @@ jobs:
           path: target/failsafe-reports
 
   dependency-scan:
-    name: OWASP Dependency-Check (conditional)
+    name: OWASP Dependency-Check (conditional step)
     runs-on: ubuntu-latest
-    needs: [ build-and-tests, regression-tests ]
-    # Only execute when an NVD API key has been configured in repo secrets.
-    if: ${{ secrets.NVD_API_KEY != '' }}
+    needs: [build-and-tests, regression-tests]
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Ensure JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Show NVD key present
+      - name: Check for NVD API key (skip if not configured)
+        id: check_nvd
         shell: bash
         run: |
           if [ -z "${{ secrets.NVD_API_KEY }}" ]; then
-            echo "NVD_API_KEY not provided - skipping dependency-check"
-            exit 1
+            echo "NVD_API_KEY secret is not configured. Skipping dependency-check job steps."
+            # Set output so later steps can know we skipped
+            echo "::set-output name=SKIP::true"
+            exit 0
           else
-            echo "NVD_API_KEY present - proceeding"
+            echo "NVD_API_KEY present, proceeding with dependency-check."
+            echo "::set-output name=SKIP::false"
           fi
 
       - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key (with retries)
+        if: steps.check_nvd.outputs.SKIP == 'false'
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         shell: bash
         run: |
           set -e -o pipefail
           export NVD_API_KEY="${NVD_API_KEY}"
-          
+
           MAX_RETRIES=3
           COUNT=0
           until [ "$COUNT" -ge "$MAX_RETRIES" ]
@@ -121,7 +124,7 @@ jobs:
             echo "dependency-check attempt $COUNT failed, retrying in 15s..."
             sleep 15
           done
-          
+
           if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
             echo "dependency-check failed after ${MAX_RETRIES} attempts"
             exit 1
@@ -152,7 +155,6 @@ jobs:
         run: |
           set -e -o pipefail
           echo "Rendering plantuml/*.puml -> generated-diagrams/"
-          # use nullglob safety for bash
           shopt -s nullglob || true
           files=(plantuml/*.puml)
           if [ ${#files[@]} -eq 0 ]; then
@@ -210,46 +212,53 @@ jobs:
           path: |
             image-metadata.txt
         continue-on-error: true
-        # Note: you can create image-metadata.txt in previous step if you want to persist info
 
   deploy-to-k8s:
     name: Deploy to Kubernetes (conditional)
     runs-on: ubuntu-latest
     needs: build-and-push-image
-    if: ${{ secrets.KUBECONFIG_DATA != '' }}
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup kubectl
+      - name: Check for KUBECONFIG_DATA secret and write kubeconfig
+        id: check_kube
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.KUBECONFIG_DATA }}" ]; then
+            echo "KUBECONFIG_DATA not set. Skipping deploy-to-k8s."
+            echo "::set-output name=SKIP::true"
+            exit 0
+          else
+            echo "KUBECONFIG_DATA secret found. Preparing kubeconfig."
+            echo "::set-output name=SKIP::false"
+            echo "${{ secrets.KUBECONFIG_DATA }}" | base64 --decode > kubeconfig
+          fi
+
+      - name: Configure kubectl (only if secret present)
+        if: steps.check_kube.outputs.SKIP == 'false'
         uses: azure/setup-kubectl@v3
         with:
           version: 'latest'
 
-      - name: Configure Kubeconfig from secret
-        shell: bash
-        env:
-          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG_DATA }}
-        run: |
-          set -e -o pipefail
-          echo "Writing kubeconfig to file"
-          echo "${KUBECONFIG_DATA}" | base64 --decode > kubeconfig
-          export KUBECONFIG=$PWD/kubeconfig
-          kubectl config view
-
-      - name: Update deployment image and rollout
+      - name: Deploy to cluster (only if secret present)
+        if: steps.check_kube.outputs.SKIP == 'false'
         shell: bash
         env:
           IMAGE_TAG: ${{ github.sha }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
           set -e -o pipefail
-          echo "Setting deployment image to $IMAGE_NAME:$IMAGE_TAG"
-          kubectl set image deployment/trade-store trade-store=${{ env.IMAGE_NAME }}:${IMAGE_TAG} --record || true
+          export KUBECONFIG=$PWD/kubeconfig
+          echo "Updating deployment image to ${IMAGE_NAME}:${IMAGE_TAG}"
+          kubectl set image deployment/trade-store trade-store=${IMAGE_NAME}:${IMAGE_TAG} --record || true
           kubectl rollout status deployment/trade-store --timeout=120s || true
 
       - name: Post-deploy notes
+        if: steps.check_kube.outputs.SKIP == 'false'
         shell: bash
         run: |
-          echo "Deployment attempted. If you need to check services, run:"
+          echo "Deployment attempted. To inspect, run:"
           echo "kubectl get pods -l app=trade-store -o wide"
 
