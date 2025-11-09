@@ -74,7 +74,7 @@ jobs:
 
   dependency-scan:
     runs-on: ubuntu-latest
-    needs: [build-and-tests, regression]
+    needs: [build-and-tests, regression-tests]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
