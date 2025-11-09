@@ -85,14 +85,17 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Run OWASP Dependency-Check (Maven plugin)
+      - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key
+        env:
+            NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
         run: |
+          # export for plugin, and pass as maven property as extra safety
+          export NVD_API_KEY="${NVD_API_KEY}"
           mvn -B org.owasp:dependency-check-maven:8.3.0:check \
             -Dformat=ALL \
             -DoutputDirectory=dependency-check-report \
+            -Dnvd.apiKey="${NVD_API_KEY}" \
             -Dproperties.failBuildOnCVSS=9
-        # NOTE: if plugin exits non-zero on critical CVEs it will fail the job
-
       - name: Upload dependency check reports
         if: always()
         uses: actions/upload-artifact@v4
