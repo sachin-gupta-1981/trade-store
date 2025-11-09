@@ -76,7 +76,7 @@ jobs:
   dependency-scan:
     name: OWASP Dependency-Check (conditional)
     runs-on: ubuntu-latest
-    needs: [build-and-tests, regression-tests]
+    needs: [ build-and-tests, regression-tests ]
     # Only execute when an NVD API key has been configured in repo secrets.
     if: ${{ secrets.NVD_API_KEY != '' }}
     timeout-minutes: 30
@@ -91,6 +91,7 @@ jobs:
           java-version: 17
 
       - name: Show NVD key present
+        shell: bash
         run: |
           if [ -z "${{ secrets.NVD_API_KEY }}" ]; then
             echo "NVD_API_KEY not provided - skipping dependency-check"
@@ -98,7 +99,6 @@ jobs:
           else
             echo "NVD_API_KEY present - proceeding"
           fi
-        shell: bash
 
       - name: Run OWASP Dependency-Check (Maven plugin) with NVD API key (with retries)
         env:
@@ -107,7 +107,7 @@ jobs:
         run: |
           set -e -o pipefail
           export NVD_API_KEY="${NVD_API_KEY}"
-
+          
           MAX_RETRIES=3
           COUNT=0
           until [ "$COUNT" -ge "$MAX_RETRIES" ]
@@ -121,7 +121,7 @@ jobs:
             echo "dependency-check attempt $COUNT failed, retrying in 15s..."
             sleep 15
           done
-
+          
           if [ "$COUNT" -ge "$MAX_RETRIES" ]; then
             echo "dependency-check failed after ${MAX_RETRIES} attempts"
             exit 1
