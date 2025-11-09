@@ -24,7 +24,6 @@ Project layout (important files)
   - mapper/TradeMapper.java           : DTO to entity mapping used by streaming and REST paths.
   - dto/TradeDto.java                 : Lightweight DTO for external payloads.
 
-Banking considerations applied
 - Validation: All domain rules enforced at service layer (fail-fast) to ensure consistency.
 - Audit fields: Trades include createdDate and expired flag for downstream auditing.
 - Correlation: All API requests are assigned/propagated with X-Correlation-Id and logged via MDC.
@@ -38,7 +37,3 @@ How to run locally (summary)
 2. mvn clean package
 3. mvn spring-boot:run
 4. POST /api/trades to create trades, GET /api/trades to view.
-
-Notes
-- The dual-write approach is illustrative; production systems should use transactional or idempotent patterns and consider eventual consistency with compensating actions.
-- Secrets and production DB/Kafka endpoints are externalised; do not commit credentials. Use a secrets manager (e.g., Azure Key Vault) in production.
